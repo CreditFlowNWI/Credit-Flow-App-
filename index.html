@@ -584,7 +584,8 @@ input[type=file]{display:none}
     <div class="edraft-body">
 
       <div class="edraft-section">
-        <div class="edraft-section-label">Step 1 — Upload Customer Statement</div>
+        <div id="edraft-check-notice" style="display:none;background:#f5f3ff;border:1.5px solid #7c3aed;border-radius:8px;padding:10px 13px;margin-bottom:12px;font-size:12px;color:#5b21b6;line-height:1.5"></div>
+        <div class="edraft-section-label">Step 1 — Upload Customer Statement (attach to see overdue invoice list)</div>
         <div class="uz" id="edraft-stmt-zone" style="min-height:90px;padding:14px" onclick="document.getElementById('edraft-stmt-input').click()">
           <div class="uz-icon" id="edraft-stmt-icon" style="font-size:22px;margin-bottom:5px">📄</div>
           <div class="uz-title" id="edraft-stmt-title" style="font-size:12px">Upload Customer Statement PDF</div>
@@ -1669,6 +1670,8 @@ function _buildSAStmtInvoices(c) {
 }
 
 function _calcRiskScore(c) {
+  // CHECK customers (masked overdue) sort between HIGH and MED
+  if (c._isCheck) return 90;
   // Risk thresholds: <£500 = LOW, <£4000 = MED, >=£4000 = HIGH
   var od = c.overdueAmount || 0;
   if (od >= 4000) return 100;
@@ -1760,8 +1763,17 @@ function renderSummaryAgingTab() {
     return {...c, overdueAmount, fromAR: overdueAmount !== c.overdueAmount, lastPaymentDate: (arMatch&&arMatch.lastPaymentDate)||'', paymentTerms: (arMatch&&arMatch.paymentTerms)||''};
   });
 
+  // CHECK customers: SA has positive values in "Before" (col4) or Range1 (col5) buckets
+  // but AR overdueAmount = 0 because credits/payments on account cancel out the net balance.
+  // They have real overdue invoices that need attention — flag them as "CHECK" (purple).
+  const checkCustomers = saEnriched.filter(c =>
+    c.overdueAmount === 0 &&
+    ((c.col4 != null && c.col4 > 0) || (c.col5 != null && c.col5 > 0))
+  ).map(c => ({...c, _isCheck: true}));
+
   let allOverdue = [
     ...saEnriched.filter(c=>c.overdueAmount>0),
+    ...checkCustomers,
     ...arOnlyOverdue
   ];
 
@@ -1897,11 +1909,12 @@ function renderSummaryAgingTab() {
       var _PARTNERS2 = ['NEW WAY MIDDLE EAST FZE','AMAZON CUSTOMERS','BOXEDTECH LTD','NEW WAY B.V','MISCELLANEOUS','GLOBAL PHONE SOLUTIONS LLC','BACK MARKET','TIKTOK SHOP'];
       var isPart = _PARTNERS2.some(function(p){return c.name.toUpperCase().includes(p);});
       var sym2 = _getCurrSym(c.currency||'GBP');
-      // Risk: based purely on overdue amount thresholds (<500=LOW, <4000=MED, >=4000=HIGH)
-      var rc = isPart ? '#16a34a' : _riskColor(c);
-      var rl = isPart ? 'LOW' : _riskLabel(c);
+      // Risk: CHECK (purple) if masked overdue; else HIGH/MED/LOW thresholds
+      var isCheck = !isPart && c._isCheck;
+      var rc = isPart ? '#16a34a' : isCheck ? '#7c3aed' : _riskColor(c);
+      var rl = isPart ? 'LOW' : isCheck ? 'CHECK' : _riskLabel(c);
       var dotCol = rc;
-      var rowBg = ci%2===0?'background:var(--surface)':'background:var(--surface2)';
+      var rowBg = isCheck ? 'background:#faf5ff' : (ci%2===0?'background:var(--surface)':'background:var(--surface2)');
       var chased = _emailedCustomers.has(c.name);
       var ar = _arEnrich(c);
       var codeTag = ar.code?('<span style="display:inline-flex;background:#0f2d4a;color:#fff;font-size:10px;font-weight:700;padding:1px 7px;border-radius:5px;margin-left:5px">'+escH(ar.code)+'</span>'):'';
@@ -1909,8 +1922,9 @@ function renderSummaryAgingTab() {
         ? '<tr><td colspan="10" style="padding:6px 12px;background:var(--green-bg);font-size:11px;font-weight:700;color:var(--green-dark);border-top:2px dashed var(--border)">🤝 Partner Companies</td></tr>'
         : '';
 
+      var checkBorder = isCheck ? 'border-left:4px solid #7c3aed;' : '';
       return partnerDivider
-        + '<tr class="sa-row" style="'+rowBg+';border-bottom:1px solid var(--border)">'
+        + '<tr class="sa-row" style="'+rowBg+';'+checkBorder+'border-bottom:1px solid var(--border)">'
         // No. column with dot indicator
         + '<td style="padding:8px 6px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);white-space:nowrap;font-size:10px;color:var(--text3);font-family:monospace">'
         +   '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+dotCol+';margin-right:5px;vertical-align:middle;box-shadow:0 0 0 2px '+dotCol+'40"></span>'
@@ -1929,10 +1943,19 @@ function renderSummaryAgingTab() {
         + _cell(c.col5||0, c.currency, true)
         // Col6 Range 2
         + _cell(c.col6||0, c.currency, true)
-        // Total Overdue
-        + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:'+(c.overdueAmount>0?'var(--red)':'var(--text3)')+';white-space:nowrap">'
-        +   (c.overdueAmount>0?sym2+c.overdueAmount.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')
-        + '</td>'
+        // Total Overdue — for CHECK customers show SA bucket total in purple
+        + (function(){
+            if (isCheck) {
+              var checkAmt = ((c.col4||0)+(c.col5||0)+(c.col6||0));
+              return '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:#7c3aed;white-space:nowrap" title="Invoices overdue but offset by credits on account — verify manually">'
+                + sym2+checkAmt.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+                + ' <span style="font-size:9px;opacity:.7">⚠</span>'
+                + '</td>';
+            }
+            return '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:'+(c.overdueAmount>0?'var(--red)':'var(--text3)')+';white-space:nowrap">'
+              + (c.overdueAmount>0?sym2+c.overdueAmount.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')
+              + '</td>';
+          })()
         // Net Overdue — RED when > 0, clickable to email
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;white-space:nowrap" title="Overdue minus amount under query">'
         +   (c._netOverdue>0
@@ -1974,8 +1997,16 @@ function renderSummaryAgingTab() {
         + '</tr>';
     }).join('');
 
+    var checkLegend = checkCustomers.length > 0
+      ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;background:#faf5ff;border:1.5px solid #7c3aed;border-radius:8px;font-size:11px;color:#5b21b6">'
+        + '<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#7c3aed;flex-shrink:0"></span>'
+        + '<strong>CHECK</strong> — '
+        + checkCustomers.length + ' customer' + (checkCustomers.length>1?'s have':' has') + ' overdue invoices offset by credits on account. Overdue amount shown is from SA date buckets. Verify and chase manually.'
+        + '</div>'
+      : '';
     document.getElementById('od-list').innerHTML =
-      '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
+      checkLegend
+      + '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
       + thead
       + '<tbody>' + tableRows + '</tbody>'
       + '</table>';
@@ -3169,6 +3200,21 @@ function openEmailDraft(ci) {
   const sym = _currSym(c.currency);
   document.getElementById('edraft-cname').textContent = c.name;
   document.getElementById('edraft-overdue').textContent = _fmtCurrency(sym, c.overdueAmount);
+
+  // CHECK customer notice
+  const checkNotice = document.getElementById('edraft-check-notice');
+  if (checkNotice) {
+    if (c._isCheck) {
+      var checkAmt = ((c.col4||0)+(c.col5||0)+(c.col6||0));
+      checkNotice.style.display = 'block';
+      checkNotice.innerHTML = '⚠️ <strong>CHECK:</strong> This customer has overdue invoices (£'
+        + checkAmt.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})
+        + ' in SA date buckets) offset by credits on account. The overdue amount shown may be £0 or understated — '
+        + 'attach the customer statement below so the email includes their actual overdue invoice list. Edit the amount manually before sending.';
+    } else {
+      checkNotice.style.display = 'none';
+    }
+  }
 
   // Auto-fill contact email if known
   const knownEmail = _lookupContact(c.name);
