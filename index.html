@@ -225,6 +225,7 @@ input[type=file]{display:none}
 
 <!-- ═══════════════════════════════════════ DASHBOARD ════════════════════════════════════ -->
 <div class="panel active" id="tab-dash">
+  
   <div id="dash-stats-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin-bottom:18px"></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px">
@@ -386,15 +387,6 @@ input[type=file]{display:none}
     </div>
     <div id="od-list" style="overflow-x:auto;width:100%;box-sizing:border-box"></div>
 
-    <div style="margin-top:28px;padding-top:20px;border-top:2px solid var(--border)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-        <div>
-          <p class="sl" style="margin:0">All Customers With a Balance</p>
-          <p style="font-size:12px;color:var(--text3);margin-top:3px">From Summary Aging — use this list to send quick statements</p>
-        </div>
-      </div>
-      <div id="all-balances-list"></div>
-    </div>
   </div>
 </div>
 
@@ -466,6 +458,7 @@ input[type=file]{display:none}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input type="text" id="enq-filter" placeholder="Filter by name…" oninput="renderEnquiries()" style="background:var(--surface);border:1.5px solid var(--border2);border-radius:var(--rsm);padding:5px 10px;font-size:12px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-weight:500;width:180px">
       <button class="btn-sm" onclick="exportEnquiriesXLSX()">⬇️ Export (.xlsx)</button>
+      <label class="btn-sm" style="cursor:pointer;background:#16a34a;color:#fff;border-color:#16a34a">⬆️ Import Excel<input type="file" accept=".xlsx,.xls" onchange="importEnquiriesXLSX(this)" style="display:none"></label>
       <button class="btn-sm" onclick="toggleEnqForm()">+ Log new enquiry</button>
     </div>
   </div>
@@ -645,6 +638,13 @@ const S = {
   dismissedAlerts: new Set(),
   saColLabels: { col4: 'Before', col5: 'Date Range 1', col6: 'Date Range 2' }
 };
+
+// ── App-wide constants (must be declared before any function that uses them) ──
+const STATS_KEY = 'nwi_stats_snapshots';
+const STATS_MAX_DAYS = 30;
+const COMMENTS_KEY = 'nwi_dash_comments';
+var _REMINDERS_KEY = 'nwi_reminders_v2';
+var REMINDERS_KEY = 'nwi_reminders_v2';
 
 // Gmail state
 let _gmailToken = null;
@@ -1365,7 +1365,6 @@ async function runCreditFlow() {
     }
     setP(90,'Rendering reports...');
     renderAll();
-    _addStatsSnapshot(); // log snapshot for stats tab
     renderDashboard(); // re-render dashboard after snapshot is saved
     setP(100,'Complete!');
     setTimeout(()=>{
@@ -1434,8 +1433,6 @@ function _arEnrich(c) {
 // ─────────────────────────────────────────────────────────────────────────────
 // REMINDERS TAB
 // ─────────────────────────────────────────────────────────────────────────────
-var _REMINDERS_KEY = 'nwi_reminders_v2';
-
 function _loadReminders() {
   try { return JSON.parse(localStorage.getItem(_REMINDERS_KEY)||'[]'); } catch(e) { return []; }
 }
@@ -1513,7 +1510,7 @@ function renderRemindersTab() {
     var isCh = _emailedCustomers.has(c.name);
     var rs = _calcRiskScore(c);
     var rl = (c.col4>0||rs>=75) ? 'HIGH' : rs>=45 ? 'MED' : 'LOW';
-    var rc = rl==='HIGH'?'#dc2626':rl==='MED'?'#d97706':'#16a34a';
+    var rc = rl==='HIGH'?'#ef4444':rl==='MED'?'#f59e0b':'#16a34a';
     var enqStr = (c.enquiryCount&&c.enquiryCount>0) ? '<span style="font-size:10px;background:#fffbeb;color:#92600e;border:1px solid #fbbf24;border-radius:9px;padding:1px 7px;font-weight:600">'+c.enquiryCount+' under query</span>' : '';
     return '<div style="display:flex;align-items:center;gap:10px;background:var(--surface);border:1.5px solid '+(isCh?'var(--border)':'#fecaca')+';border-left:4px solid '+(isCh?'#16a34a':rc)+';border-radius:var(--r);padding:11px 14px;margin-bottom:6px;opacity:'+(isCh?'.6':'1')+'">'
       + '<div style="flex:1;min-width:0">'
@@ -1566,11 +1563,15 @@ function populateStmtCustomerDropdown() {
 }
 
 function renderAll() {
+  // Build global AR lookup for all render functions to use consistently
+  window._arByName = {};
+  S.arCustomers.forEach(function(c){ window._arByName[c.name.toLowerCase().trim()] = c; });
   renderAlerts();
   renderSummaryAgingTab();
   renderAgedReceivablesTab();
   renderMatchReportTab();
   updateTabBadges();
+  _addStatsSnapshot();
   renderDashboard();
   renderDashComments();
   populateStmtCustomerDropdown();
@@ -1581,12 +1582,12 @@ function renderAll() {
 function updateTabBadges() {
   // Combined overdue: SA + AR customers not in SA
   const saNameSet = new Set(S.saCustomers.map(c=>c.name.toLowerCase().trim()));
-  const arOnlyCount = S.arCustomers.filter(c=>c.overdue>0&&!saNameSet.has(c.name.toLowerCase().trim())).length;
+  const arOnlyCount = S.arCustomers.filter(c=>Math.max(0,(c.balance||0)-(c.notDue||0))>0&&!saNameSet.has(c.name.toLowerCase().trim())).length;
   const arByName2 = {};
   S.arCustomers.forEach(c=>{arByName2[c.name.toLowerCase().trim()]=c;});
   const saOD = S.saCustomers.filter(c=>{
-    let od = c.overdueAmount;
-    if(od===0){const m=arByName2[c.name.toLowerCase().trim()];if(m&&m.overdue>0)od=m.overdue;}
+    const m=arByName2[c.name.toLowerCase().trim()];
+    const od = (m && m.balance != null) ? Math.max(0,(m.balance||0)-(m.notDue||0)) : c.overdueAmount;
     return od>0;
   }).length;
   const od = saOD + arOnlyCount;
@@ -1682,7 +1683,7 @@ function _riskLabel(c) {
 }
 function _riskColor(c) {
   var rl = _riskLabel(c);
-  return rl==='HIGH' ? '#dc2626' : rl==='MED' ? '#eab308' : '#16a34a';
+  return rl==='HIGH' ? '#ef4444' : rl==='MED' ? '#f59e0b' : '#22c55e';
 }
 
 function renderSummaryAgingTab() {
@@ -1716,13 +1717,15 @@ function renderSummaryAgingTab() {
   // SA customers: enrich overdue with AR overdue if SA shows 0 but AR shows overdue
   const arByName = {};
   S.arCustomers.forEach(c => { arByName[c.name.toLowerCase().trim()] = c; });
+  // Also update global so other render functions use same data
+  window._arByName = arByName;
 
   const saEnriched = S.saCustomers.map(c => {
     const arMatch = arByName[c.name.toLowerCase().trim()];
-    // Use AR balance − notDue as definitive overdue (most accurate)
-    // Falls back to SA col4+col5+col6 if AR not loaded for this customer
-    let overdueAmount = (arMatch && arMatch.balance > 0)
-      ? Math.max(0, arMatch.balance - (arMatch.notDue||0))
+    // Overdue = AR (balance - notDue) when AR loaded; else SA bucket sum
+    // AR is the authoritative source per user requirement
+    let overdueAmount = (arMatch && arMatch.balance != null)
+      ? Math.max(0, (arMatch.balance||0) - (arMatch.notDue||0))
       : c.overdueAmount;
     // Deduct remitted invoice amounts for THIS specific customer only
     // Match remittances to customer by name
@@ -1864,7 +1867,7 @@ function renderSummaryAgingTab() {
     if (val === undefined) return '<td style="padding:9px 12px;text-align:right;border-right:1px solid var(--border);color:var(--text3);font-size:13px">—</td>';
     if (val === 0) return '<td style="padding:9px 12px;text-align:right;border-right:1px solid var(--border);color:var(--text3);font-size:13px">—</td>';
     // Show negatives (credits/payments on account) in blue
-    var color = val < 0 ? '#2563eb' : (redIfPos ? 'var(--red)' : 'var(--text)');
+    var color = val < 0 ? '#16a34a' : (redIfPos ? 'var(--red)' : 'var(--text)');
     var sym2 = _getCurrSym(currency||'GBP');
     var sign = val < 0 ? '-' : '';
     return '<td style="padding:9px 10px;text-align:right;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:'+color+';white-space:nowrap">'+sign+sym2+Math.abs(val).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>';
@@ -1910,7 +1913,7 @@ function renderSummaryAgingTab() {
         + '<tr class="sa-row" style="'+rowBg+';border-bottom:1px solid var(--border)">'
         // No. column with dot indicator
         + '<td style="padding:8px 6px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);white-space:nowrap;font-size:10px;color:var(--text3);font-family:monospace">'
-        +   '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+dotCol+';margin-right:4px;vertical-align:middle"></span>'
+        +   '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+dotCol+';margin-right:5px;vertical-align:middle;box-shadow:0 0 0 2px '+dotCol+'40"></span>'
         +   escH(ar.code||c.code||'')
         + '</td>'
         // Name
@@ -1928,15 +1931,17 @@ function renderSummaryAgingTab() {
         + _cell(c.col6||0, c.currency, true)
         // Total Overdue
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:'+(c.overdueAmount>0?'var(--red)':'var(--text3)')+';white-space:nowrap">'
-        +   (c.overdueAmount>0?sym2+c.overdueAmount.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0}):'—')
+        +   (c.overdueAmount>0?sym2+c.overdueAmount.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')
         + '</td>'
-        // Net Overdue (overdue minus amount under query)
-        + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;color:'+(c._netOverdue>0?'#0e7490':'var(--text3)')+';white-space:nowrap" title="Overdue minus amount under query">'
-        +   (c._netOverdue>0?sym2+c._netOverdue.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0}):'—')
+        // Net Overdue — RED when > 0, clickable to email
+        + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:700;font-size:12px;white-space:nowrap" title="Overdue minus amount under query">'
+        +   (c._netOverdue>0
+              ? '<span onclick="openEmailDraft('+ci+')" style="color:var(--red);cursor:pointer;text-decoration:underline;text-decoration-style:dotted" title="Click to email this customer">'+sym2+c._netOverdue.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'
+              : '<span style="color:var(--text3)">—</span>')
         + '</td>'
         // Balance
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-weight:600;font-size:12px;white-space:nowrap">'
-        +   (c.balance!==0?(c.balance<0?'<span style="color:var(--blue)">':'')+sym2+Math.abs(c.balance).toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0})+(c.balance<0?'</span>':''):'—')
+        +   (c.balance!==0?(c.balance<0?'<span style="color:#16a34a">':'')+sym2+Math.abs(c.balance).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})+(c.balance<0?'</span>':''):'—')
         + '</td>'
         // Query count
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border)">'
@@ -1946,7 +1951,7 @@ function renderSummaryAgingTab() {
         + '</td>'
         // Query value
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-size:11px;color:'+(c._enqAmount>0?'#92600e':'var(--text3)')+';white-space:nowrap">'
-        +   (c._enqAmount>0?sym2+c._enqAmount.toLocaleString('en-GB',{minimumFractionDigits:0,maximumFractionDigits:0}):'—')
+        +   (c._enqAmount>0?sym2+c._enqAmount.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}):'—')
         + '</td>'
         // Last Payment Date
         + '<td style="padding:9px 8px;text-align:center;vertical-align:middle;border-right:1px solid var(--border);font-size:10px;color:var(--text2);white-space:nowrap">'
@@ -1958,7 +1963,7 @@ function renderSummaryAgingTab() {
         + '</td>'
         // Risk
         + '<td style="padding:8px 6px;text-align:center;vertical-align:middle;border-right:1px solid var(--border)">'
-        +   '<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:10px;background:'+rc+'25;color:'+rc+';border:1.5px solid '+rc+';white-space:nowrap;letter-spacing:.02em">'+rl+'</span>'
+        +   '<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:10px;background:'+rc+';color:#fff;white-space:nowrap;letter-spacing:.04em;text-shadow:0 1px 2px rgba(0,0,0,.3)">'+rl+'</span>'
         + '</td>'
         // Actions
         + '<td style="padding:6px 8px;text-align:center;vertical-align:middle;white-space:nowrap;min-width:170px">'
@@ -1978,29 +1983,6 @@ function renderSummaryAgingTab() {
     document.getElementById('od-list').innerHTML = '<div class="empty"><div class="ei">✅</div><p>No overdue balances found</p></div>';
   }
 
-  // All balances table
-  const allBalSorted = [...allBal].sort((a,b)=>b.balance-a.balance);
-  document.getElementById('all-balances-list').innerHTML = allBalSorted.length ? `
-    <table class="tbl">
-      <thead><tr><th>Customer Name</th><th>Currency</th><th>Balance on Account</th><th>Overdue Amount</th><th>Invoices Under Query</th></tr></thead>
-      <tbody>${allBalSorted.map(c=>{
-        const custEnqs = S.enquiries.filter(e =>
-          e.customer.toLowerCase().includes(c.name.toLowerCase().split(' ')[0]) ||
-          c.name.toLowerCase().includes(e.customer.toLowerCase().split(' ')[0])
-        );
-        const enqInvs = custEnqs.map(e=>e.invoices).filter(Boolean).join('; ');
-        const enqBadge = custEnqs.length
-          ? `<span class="badge ba" style="font-size:10px" title="${escH(enqInvs||'Enquiry logged')}">⚠️ ${custEnqs.length} enquir${custEnqs.length===1?'y':'ies'}</span>`
-          : '<span style="color:var(--text3);font-size:11px">—</span>';
-        return`<tr>
-          <td><div style="font-weight:600;font-size:13px">${(()=>{const ar=_arEnrich(c);return escH(ar.name);})()}</div>${(()=>{const ar=_arEnrich(c);return ar.code?`<span style="display:inline-flex;align-items:center;background:#0f2d4a;color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:5px;font-family:'DM Mono',monospace;margin-top:3px;letter-spacing:.04em">${escH(ar.code)}</span>`:'';})()} </td>
-          <td><span class="badge bgr">${c.currency}</span></td>
-          <td style="font-weight:700">${fmtC(c.balance, c.currency)}</td>
-          <td style="color:${c.overdueAmount>0?'var(--red)':c.overdueAmount<0?'var(--blue)':'var(--text3)'};font-weight:${c.overdueAmount!==0?'700':'400'}">${c.overdueAmount!==0?fmt(c.overdueAmount):'—'}</td>
-          <td>${enqBadge}</td>
-        </tr>`;}).join('')}
-      </tbody>
-    </table>` : '<div class="empty"><div class="ei">✅</div><p>No customers with positive balances</p></div>';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2393,7 +2375,8 @@ function renderBulkEmailsTab() {
           const cw = c.name.toLowerCase().split(/\s+/).find(w=>w.length>3)||'';
           return aw && cw && (a.name.toLowerCase().includes(cw)||c.name.toLowerCase().includes(aw));
         });
-    return { code: ar?ar.code:c.code||'', name: ar?ar.name:c.name, currency: c.currency, balance: c.balance, overdueAmount: c.overdueAmount };
+    var arOD = (ar && ar.balance != null) ? Math.max(0, (ar.balance||0) - (ar.notDue||0)) : c.overdueAmount;
+    return { code: ar?ar.code:c.code||'', name: ar?ar.name:c.name, currency: c.currency, balance: ar?ar.balance:c.balance, overdueAmount: arOD };
   }
   let withBalance;
   if (S.saCustomers.length) {
@@ -2829,7 +2812,105 @@ function exportEnquiriesXLSX() {
   ws['!cols']=[{wch:30},{wch:20},{wch:12},{wch:10},{wch:40},{wch:35},{wch:18},{wch:30},{wch:14}];
   XLSX.utils.book_append_sheet(wb, ws, 'Enquiries');
   XLSX.writeFile(wb, 'NWI_Enquiries_'+TODAY.toLocaleDateString('en-GB').replace(/\//g,'-')+'.xlsx');
-  toast('ok','Enquiries exported','Excel file downloaded');
+  markEnqExported();
+  toast('ok','Enquiries exported','Excel file downloaded — keep this file safe!');
+}
+
+function importEnquiriesXLSX(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      // Find data rows - skip header rows (look for 'Customer' column header)
+      var headerRow = -1;
+      for (var i = 0; i < Math.min(rows.length, 10); i++) {
+        var rowStr = (rows[i]||[]).join('|').toLowerCase();
+        if (rowStr.includes('customer') && (rowStr.includes('invoice') || rowStr.includes('priority'))) {
+          headerRow = i;
+          break;
+        }
+      }
+      if (headerRow < 0) { toast('err','Import failed','Could not find header row with Customer/Invoice/Priority columns'); return; }
+      var headers = (rows[headerRow]||[]).map(function(h){ return String(h||'').toLowerCase().trim(); });
+      var colIdx = function(names) {
+        for (var i=0;i<names.length;i++){
+          var idx = headers.indexOf(names[i].toLowerCase());
+          if (idx>=0) return idx;
+        }
+        return -1;
+      };
+      var cCol = colIdx(['customer','customer name']);
+      var invCol = colIdx(['invoice(s)','invoices','invoice numbers','invoice']);
+      var amtCol = colIdx(['amount (£)','amount','amount in query','query amount']);
+      var priCol = colIdx(['priority']);
+      var issueCol = colIdx(['enquiry / dispute','enquiry','dispute','issue']);
+      var saidCol = colIdx(['customer said','what customer said']);
+      var commCol = colIdx(['last communication','last comm','last contact']);
+      var nextCol = colIdx(['next action','what needs to be done']);
+      var logCol = colIdx(['date logged','logged','logged at']);
+      if (cCol < 0) { toast('err','Import failed','Customer column not found'); return; }
+      var imported = 0;
+      var skipped = 0;
+      var existingCustAmts = new Set(S.enquiries.map(function(e){ return (e.customer||'').toLowerCase()+'|'+(e.amount||''); }));
+      for (var r = headerRow+1; r < rows.length; r++) {
+        var row = rows[r]||[];
+        var cust = String(row[cCol]||'').trim();
+        if (!cust || cust.toLowerCase().includes('total') || cust.toLowerCase().includes('report')) continue;
+        var amount = amtCol>=0 ? String(row[amtCol]||'').replace(/[£,\s]/g,'').trim() : '';
+        var dupKey = cust.toLowerCase()+'|'+amount;
+        if (existingCustAmts.has(dupKey)) { skipped++; continue; }
+        var priRaw = String(priCol>=0 ? row[priCol]||'' : 'med').toLowerCase();
+        var priority = priRaw.includes('high') ? 'high' : priRaw.includes('low') ? 'low' : 'med';
+        S.enquiries.push({
+          id: Date.now() + r,
+          customer: cust,
+          invoices: invCol>=0 ? String(row[invCol]||'').trim() : '',
+          amount: amount,
+          priority: priority,
+          issue: issueCol>=0 ? String(row[issueCol]||'').trim() : '',
+          customerSaid: saidCol>=0 ? String(row[saidCol]||'').trim() : '',
+          lastComm: commCol>=0 ? String(row[commCol]||'').trim() : '',
+          nextAction: nextCol>=0 ? String(row[nextCol]||'').trim() : '',
+          loggedAt: logCol>=0 ? String(row[logCol]||'').trim() : TODAY.toLocaleDateString('en-GB'),
+          category: 'other'
+        });
+        existingCustAmts.add(dupKey);
+        imported++;
+      }
+      saveEnquiriesToStorage();
+      renderEnquiries();
+      updateEnqBadge();
+      renderDashboard();
+      toast('ok', 'Enquiries imported', imported+' added' + (skipped?' · '+skipped+' duplicates skipped':''));
+    } catch(err) {
+      toast('err', 'Import failed', err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+  // Reset input so same file can be re-selected
+  input.value = '';
+}
+
+// Auto-save daily export reminder — check once per day
+(function _checkDailyExport() {
+  if (!S.enquiries.length) return;
+  try {
+    var lastExport = localStorage.getItem('nwi_last_enq_export');
+    var today = TODAY.toISOString().slice(0,10);
+    if (lastExport === today) return; // already exported today
+    // Show reminder toast after 3 seconds
+    setTimeout(function() {
+      toast('warn', 'Daily backup reminder', 'Export your enquiries to Excel to keep a safe copy');
+    }, 3000);
+  } catch(e) {}
+})();
+
+function markEnqExported() {
+  try { localStorage.setItem('nwi_last_enq_export', TODAY.toISOString().slice(0,10)); } catch(e) {}
 }
 
 const _catLabels = {"dispute": "⚖️ Dispute", "pricing": "💷 Pricing Error", "delivery": "🚚 Delivery", "pod": "📦 POD Required", "credit_note": "📝 Credit Note", "payment_plan": "📅 Payment Plan", "other": "💬 Other"};
@@ -2919,19 +3000,31 @@ loadEnquiriesFromStorage();
       'nwi_stmt_files','nwi_stmt_filename','nwi_sa_col_labels','nwi_dash_comments',
       'nwi_stats_snapshots','nwi_reminders_v2'];
     var BACKUP_KEY = 'nwi_data_backup';
-    // Try to restore from explicit backup if current data is missing
-    var raw = S.enquiries.length === 0 ? localStorage.getItem(BACKUP_KEY) : null;
-    if (raw) {
-      var bk = JSON.parse(raw);
-      ALL_KEYS.forEach(function(k) {
-        if (bk[k] && !localStorage.getItem(k)) {
-          localStorage.setItem(k, bk[k]);
-        }
-      });
+    var raw = localStorage.getItem(BACKUP_KEY);
+    if (!raw) return;
+    var bk = JSON.parse(raw);
+    // Restore any key that is currently missing from localStorage
+    var restored = 0;
+    ALL_KEYS.forEach(function(k) {
+      if (bk[k] && !localStorage.getItem(k)) {
+        localStorage.setItem(k, bk[k]);
+        restored++;
+      }
+    });
+    if (restored > 0) {
       // Re-run load after restore
       loadEnquiriesFromStorage();
       loadRemittancesFromStorage();
       _loadContactsFromStorage();
+      try {
+        var rawSA = localStorage.getItem('nwi_sa_customers');
+        if (rawSA) S.saCustomers = JSON.parse(rawSA);
+        var rawAR = localStorage.getItem('nwi_ar_customers');
+        if (rawAR) {
+          S.arCustomers = JSON.parse(rawAR);
+          S.arCustomers.forEach(function(c){ if(c.creditLimit>0) c.utilization=c.balance/c.creditLimit*100; });
+        }
+      } catch(e2) {}
     }
   } catch(e) {}
 })();
@@ -2961,9 +3054,13 @@ renderRemList();
 updateReadiness();
 // Render all tabs that have persisted data loaded from localStorage
 if (S.saCustomers.length || S.arCustomers.length) {
+  // Build _arByName for renderSummaryAgingTab to use
+  window._arByName = {};
+  S.arCustomers.forEach(function(c){ window._arByName[c.name.toLowerCase().trim()] = c; });
   renderSummaryAgingTab();
   renderAgedReceivablesTab();
   renderBulkEmailsTab();
+  _addStatsSnapshot(); // snapshot on every page load that has data
 }
 renderRemindersTab(); // always render reminders from localStorage on page load
 if (S.stmtInvoices.length || S.remittances.length) renderMatchReportTab();
@@ -3824,9 +3921,6 @@ async function createRemittanceGmailDraft() {
 // CREDIT CONTROL STATS
 // Snapshots of SA/AR data logged over time, trend chart, currency totals
 // ─────────────────────────────────────────────────────────────────────────────
-const STATS_KEY = 'nwi_stats_snapshots';
-const STATS_MAX_DAYS = 30;
-
 function _loadStatsHistory() {
   try {
     const raw = localStorage.getItem(STATS_KEY);
@@ -3855,7 +3949,7 @@ function _addStatsSnapshot() {
   S.arCustomers.forEach(c => { _arByNameSnap[c.name.toLowerCase().trim()] = c; });
   function _snapOverdue(c) {
     var arM = _arByNameSnap[c.name.toLowerCase().trim()];
-    return (arM && arM.balance > 0) ? Math.max(0, arM.balance - (arM.notDue||0)) : (c.overdueAmount||0);
+    return (arM && arM.balance != null) ? Math.max(0, (arM.balance||0) - (arM.notDue||0)) : (c.overdueAmount||0);
   }
 
   // Build currency-grouped totals
@@ -3894,13 +3988,14 @@ function renderDashboard() {
   const snapshots = _loadStatsHistory();
   const thisMonth = TODAY.toISOString().slice(0,7); // YYYY-MM
 
+
   // ── Stats row ──
   // Mirror Summary Aging exactly: use AR balance-notDue where available (same as SA table)
   const _arByNameDash = {};
   S.arCustomers.forEach(c => { _arByNameDash[c.name.toLowerCase().trim()] = c; });
   function _dashOverdue(c) {
     var arM = _arByNameDash[c.name.toLowerCase().trim()];
-    return (arM && arM.balance > 0) ? Math.max(0, arM.balance - (arM.notDue||0)) : (c.overdueAmount||0);
+    return (arM && arM.balance != null) ? Math.max(0, (arM.balance||0) - (arM.notDue||0)) : (c.overdueAmount||0);
   }
   const totalOD = S.saCustomers.reduce((s,c)=>s+Math.max(0,_dashOverdue(c)),0);
   const _saNames = new Set(S.saCustomers.map(c=>c.name.toLowerCase().trim()));
@@ -4204,8 +4299,6 @@ function exportStatsXLSX() {
 // ─────────────────────────────────────────────────────────────────────────────
 // DASHBOARD COMMENTS / NOTES
 // ─────────────────────────────────────────────────────────────────────────────
-const COMMENTS_KEY = 'nwi_dash_comments';
-
 function _loadComments() {
   try { return JSON.parse(localStorage.getItem(COMMENTS_KEY)||'[]'); } catch(e) { return []; }
 }
