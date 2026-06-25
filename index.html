@@ -456,7 +456,8 @@ input[type=file]{display:none}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
     <p class="sl" style="margin:0">Open Enquiries</p>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="enq-filter" placeholder="Filter by name…" oninput="renderEnquiries()" style="background:var(--surface);border:1.5px solid var(--border2);border-radius:var(--rsm);padding:5px 10px;font-size:12px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-weight:500;width:180px">
+      <input type="text" id="enq-filter" placeholder="Filter by customer…" oninput="renderEnquiries()" style="background:var(--surface);border:1.5px solid var(--border2);border-radius:var(--rsm);padding:5px 10px;font-size:12px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-weight:500;width:170px">
+      <input type="text" id="enq-inv-filter" placeholder="🔍 Search invoice no…" oninput="renderEnquiries()" style="background:var(--surface);border:1.5px solid #7c3aed;border-radius:var(--rsm);padding:5px 10px;font-size:12px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-weight:500;width:175px">
       <button class="btn-sm" onclick="exportEnquiriesXLSX()">⬇️ Export (.xlsx)</button>
       <label class="btn-sm" style="cursor:pointer;background:#16a34a;color:#fff;border-color:#16a34a">⬆️ Import Excel<input type="file" accept=".xlsx,.xls" onchange="importEnquiriesXLSX(this)" style="display:none"></label>
       <button class="btn-sm" onclick="toggleEnqForm()">+ Log new enquiry</button>
@@ -1781,11 +1782,19 @@ function renderSummaryAgingTab() {
   // Only OPEN enquiries count (resolved ones are removed from S.enquiries entirely)
   allOverdue = allOverdue.map(function(c) {
     var cNameLow = c.name.toLowerCase().trim();
-    var cFirstWord = cNameLow.split(/\s+/).find(function(w){return w.length>3;}) || cNameLow.split(' ')[0];
+    // Strict matching: enquiry customer must exactly equal the SA customer name,
+    // OR the enquiry name must fully contain (or be fully contained by) the SA name.
+    // We deliberately avoid single-word partial matches to prevent cross-customer bleed.
     var matches = S.enquiries.filter(function(e) {
       var eNameLow = (e.customer||'').toLowerCase().trim();
-      var eFirstWord = eNameLow.split(/\s+/).find(function(w){return w.length>3;}) || eNameLow.split(' ')[0];
-      return eNameLow === cNameLow || eNameLow.includes(cFirstWord) || cNameLow.includes(eFirstWord);
+      if (!eNameLow) return false;
+      // Exact match
+      if (eNameLow === cNameLow) return true;
+      // Full-string containment only (not word-level) — e.g. "more computers ltd" contains "more computers"
+      if (cNameLow.length >= 6 && eNameLow === cNameLow) return true;
+      // SA name starts with enquiry name or vice versa (handles "More Computers" vs "More Computers Ltd")
+      if (cNameLow.startsWith(eNameLow) || eNameLow.startsWith(cNameLow)) return true;
+      return false;
     });
     var enqCount = matches.length;
     var enqAmount = matches.reduce(function(s,e) {
@@ -2948,9 +2957,20 @@ const _catLabels = {"dispute": "⚖️ Dispute", "pricing": "💷 Pricing Error"
 function renderEnquiries(){
   const list=document.getElementById('enq-list'), empty=document.getElementById('enq-empty');
   const enqFilterVal = (document.getElementById('enq-filter')||{}).value||'';
-  const filteredEnqs = enqFilterVal.trim()
+  const enqInvFilter = ((document.getElementById('enq-inv-filter')||{}).value||'').trim().toLowerCase();
+  let filteredEnqs = enqFilterVal.trim()
     ? S.enquiries.filter(e=>e.customer.toLowerCase().includes(enqFilterVal.trim().toLowerCase()))
     : S.enquiries;
+  // Invoice number search — matches against the invoices field (comma-separated)
+  if (enqInvFilter) {
+    filteredEnqs = filteredEnqs.filter(function(e) {
+      var invs = String(e.invoices||'').toLowerCase();
+      // Split by comma/space and check each token
+      return invs.split(/[,\s]+/).some(function(tok) {
+        return tok && tok.includes(enqInvFilter);
+      }) || invs.includes(enqInvFilter);
+    });
+  }
   if(!filteredEnqs.length){list.innerHTML='';empty.style.display='block';return;}
   empty.style.display='none';
   const pc={high:'ph',med:'pm',low:'pl'}, pl={high:'🔴 High',med:'🟡 Medium',low:'🟢 Low'}, pb={high:'br',med:'ba',low:'bg'};
